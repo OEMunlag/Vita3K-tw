@@ -379,7 +379,7 @@ void VKContext::stop_render_pass() {
     in_renderpass = false;
 }
 
-void VKContext::stop_recording(const SceGxmNotification ¬if1, const SceGxmNotification ¬if2, bool submit) {
+void VKContext::stop_recording(const SceGxmNotification &notif1, const SceGxmNotification &notif2, bool submit) {
     if (!is_recording) {
         LOG_ERROR("Stopping recording while not recording");
         return;
