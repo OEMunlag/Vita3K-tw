@@ -18,7 +18,7 @@
 #include <gxm/types.h>
 #include <renderer/commands.h>
 #include <renderer/driver_functions.h>
-#include <renderer/state.h>
+#include <renderer/state.h> // Should be included for State definition
 #include <renderer/types.h>
 
 #include <renderer/gl/functions.h>
@@ -26,12 +26,48 @@
 #include <renderer/vulkan/state.h>
 
 #include <gxm/functions.h>
-#include <renderer/functions.h>
+#include <renderer/functions.h> // For renderer::sha256, etc.
 #include <util/align.h>
 #include <util/log.h>
 #include <util/tracy.h>
+#include <string> // For std::string in game_start
 
 namespace renderer {
+
+// Definition for State::game_start from the patch
+void State::game_start(const char *base_p, const char *title_id_str, const char *self_name_str) {
+    this->base_path = base_p;
+    this->title_id = title_id_str;
+    this->self_name = self_name_str;
+
+    // Call the renamed function from renderer/include/renderer/state.h to set shader paths
+    set_app_paths(this->title_id, this->self_name);
+
+    static const std::string tearaway_games[] = {
+        "PCSC00048",
+        "PCSC00064",
+        "PCSF00214",
+        "PCSF00476",
+        "PCSF00463",
+        "PCSD00072",
+        "PCSD00077",
+        "PCSA00099",
+        "PCSA00141",
+        "PCSA00142",
+        "PCSA00144"
+    };
+
+    // Reset the flag by default
+    features.use_rgba16_for_rgba8 = false;
+    const std::string title_string_lookup = std::string(this->title_id);
+    for (const auto &tearaway_game : tearaway_games) {
+        if (title_string_lookup.find(tearaway_game) != std::string::npos) {
+            features.use_rgba16_for_rgba8 = true;
+            LOG_INFO("Tearaway game detected, using improved tiled renderer emulation.");
+            break; // Found, no need to continue loop
+        }
+    }
+}
 
 static void layout_ssbo_offset_from_uniform_buffer_sizes(UniformBufferSizes &sizes, UniformBufferSizes &offsets, std::size_t &total_hold) {
     std::uint32_t last_offset = 0;

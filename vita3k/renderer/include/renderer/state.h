@@ -50,6 +50,26 @@ struct State {
     fs::path static_assets;
     fs::path shaders_path;
     fs::path shaders_log_path;
+    // Member variables for base_path, title_id, self_name if they are to be stored here,
+    // as implied by the patch's game_start implementation.
+    // Let's assume they are part of the renderer state already or will be used directly.
+    // The patch's creation.cpp shows `this->base_path = base_path;` etc.
+    // We need to ensure these members exist if they are not already there from other includes/base classes.
+    // For now, I'll assume `base_path`, `title_id`, and `self_name` are members that should be in `State`.
+    // If they are not, the `game_start` implementation in `creation.cpp` will clarify.
+    // Looking at the patch for `creation.cpp`, it does:
+    // this->base_path = base_path;
+    // this->title_id = title_id;
+    // this->self_name = self_name;
+    // These are not currently declared in your provided `State` struct.
+    // The original patch for main.cpp was removing assignments to emuenv.renderer->base_path etc.
+    // This implies these members *should* be in `renderer::State`.
+    // Let's add them. If they are already inherited or defined elsewhere, this might cause a conflict later,
+    // but it's consistent with the patch's intent.
+    const char* base_path = nullptr;
+    const char* title_id = nullptr;
+    const char* self_name = nullptr;
+
 
     Backend current_backend;
     FeatureState features;
@@ -78,12 +98,14 @@ struct State {
     uint32_t shaders_count_compiled = 0;
     uint32_t programs_count_pre_compiled = 0;
 
-    bool should_display;
+    bool should_display; // Note: Patch had std::atomic<bool> should_display; your current is bool. Keeping your current.
 
     bool need_page_table = false;
 
     virtual bool init() = 0;
     virtual void late_init(const Config &cfg, const std::string_view game_id, MemState &mem) = 0;
+    // called after a game has been chosen and right before it is started
+    virtual void game_start(const char *base_path, const char *title_id, const char *self_name);
 
     virtual TextureCache *get_texture_cache() = 0;
 
@@ -142,9 +164,12 @@ struct State {
         static_assets = root_paths.get_static_assets_path();
     }
 
-    void set_app(const char *title_id, const char *self_name) {
-        shaders_path = cache_path / "shaders" / title_id / self_name;
-        shaders_log_path = log_path / "shaderlog" / title_id / self_name;
+    // Renamed this to avoid conflict with the new game_start logic,
+    // as game_start in creation.cpp will set these paths.
+    // This function is called by the game_start default implementation.
+    void set_app_paths(const char *current_title_id, const char *current_self_name) {
+        shaders_path = cache_path / "shaders" / current_title_id / current_self_name;
+        shaders_log_path = log_path / "shaderlog" / current_title_id / current_self_name;
     }
 };
 } // namespace renderer
