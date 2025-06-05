@@ -385,7 +385,7 @@ int main(int argc, char *argv[]) {
         if (err != Success)
             return err;
     }
-    gui.live_area.information_bar = false;
+    gui.vita_area.information_bar = false;
 
     // Pre-Compile Shaders
     emuenv.renderer->game_start(emuenv.base_path.c_str(), emuenv.io.title_id.c_str(), emuenv.self_name.c_str());
