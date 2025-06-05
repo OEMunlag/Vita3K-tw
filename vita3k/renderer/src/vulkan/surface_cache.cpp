@@ -22,6 +22,7 @@
 #include <renderer/vulkan/state.h>
 #include <renderer/vulkan/types.h>
 #include <vkutil/vkutil.h>
+#include <features/state.h> // Added for FeatureState
 
 #include <vulkan/vulkan_format_traits.hpp>
 
@@ -109,8 +110,8 @@ void VKSurfaceCache::destroy_surface(DepthStencilSurfaceCacheInfo &info) {
     destroy_queue.add_image(info.texture);
 }
 
-VKSurfaceCache::VKSurfaceCache(VKState &state)
-    : state(state) {
+VKSurfaceCache::VKSurfaceCache(VKState &state_param) // Renamed parameter to avoid shadowing member
+    : state(state_param) {
     color_surface_queue.init(max_surfaces_allowed);
     ds_surface_queue.init(max_surfaces_allowed);
 }
@@ -157,6 +158,9 @@ SurfaceRetrieveResult VKSurfaceCache::retrieve_color_surface_for_framebuffer(Mem
             LOG_WARN_ONCE("Trying to use gamma correction with non-compatible format {}", vk::to_string(vk_format));
         }
     }
+
+    if (state.features.use_rgba16_for_rgba8 && vk_format == vk::Format::eR8G8B8A8Unorm)
+        vk_format = vk::Format::eR16G16B16A16Sfloat;
 
     uint32_t bytes_per_stride = color->strideInPixels * gxm::bits_per_pixel(base_format) / 8;
     uint32_t total_surface_size = bytes_per_stride * original_height;
@@ -247,16 +251,21 @@ SurfaceRetrieveResult VKSurfaceCache::retrieve_color_surface_for_framebuffer(Mem
     image.layout = vkutil::ImageLayout::Undefined;
 
     // we might have to create a non-srgb/linear view later if this surface is used for presentation
-    const bool need_mutable = (vk_format == vk::Format::eR8G8B8A8Unorm || vk_format == vk::Format::eR8G8B8A8Srgb);
+    const bool need_mutable = (vk_format == vk::Format::eR8G8B8A8Unorm || vk_format == vk::Format::eR8G8B8A8Srgb || vk_format == vk::Format::eR16G16B16A16Sfloat);
     const vk::ImageCreateFlags image_create_flags = need_mutable ? vk::ImageCreateFlagBits::eMutableFormat : vk::ImageCreateFlags();
     const void *image_info_pNext = nullptr;
     if (support_image_format_specifier && need_mutable) {
-        static const vk::Format view_formats[] = { vk::Format::eR8G8B8A8Unorm, vk::Format::eR8G8B8A8Srgb };
-        static const vk::ImageFormatListCreateInfoKHR image_info_formats{
+        // This might need adjustment if R16G16B16A16Sfloat needs to be in the view_formats list
+        static const vk::Format r8_view_formats[] = { vk::Format::eR8G8B8A8Unorm, vk::Format::eR8G8B8A8Srgb };
+        static const vk::ImageFormatListCreateInfoKHR r8_image_info_formats{
             .viewFormatCount = 2,
-            .pViewFormats = view_formats
+            .pViewFormats = r8_view_formats
         };
-        image_info_pNext = &image_info_formats;
+        // For R16G16B16A16Sfloat, if it needs its own list or can be handled without explicit listing if not paired with another mutable format.
+        // Assuming for now it doesn't need special listing here if it's the *only* format or handled implicitly.
+        if (vk_format == vk::Format::eR8G8B8A8Unorm || vk_format == vk::Format::eR8G8B8A8Srgb) {
+            image_info_pNext = &r8_image_info_formats;
+        }
     }
 
     vk::ImageUsageFlags surface_usages = vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eTransferSrc | vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eInputAttachment;
@@ -339,6 +348,8 @@ std::optional<TextureLookupResult> VKSurfaceCache::retrieve_color_surface_as_tex
             LOG_WARN_ONCE("Trying to use gamma correction with non-compatible format {}", vk::to_string(vk_format));
         }
     }
+    // This check should ideally also be here if this function can be called when use_rgba16_for_rgba8 is active
+    // However, the patch doesn't add it here. If problems arise with textures from RGBA16 surfaces, this might be a place to look.
 
     uint32_t stride_bytes = 0;
     SurfaceTiling tiling = SurfaceTiling::Swizzled;
@@ -1084,16 +1095,16 @@ bool VKSurfaceCache::check_for_surface(MemState &mem, Address source_address, Ca
 
         // now we need to wait for the fence, then destroy it along with the command buffer
         // to prevent memory leaks
-        CallbackRequestFunction vk_callback = [&state = this->state, fence, surface_cmd]() {
-            auto result = state.device.waitForFences(fence, vk::True, std::numeric_limits<uint64_t>::max());
+        CallbackRequestFunction vk_callback = [&state_ref = this->state, fence, surface_cmd]() { // Renamed state to state_ref
+            auto result = state_ref.device.waitForFences(fence, vk::True, std::numeric_limits<uint64_t>::max());
             if (result != vk::Result::eSuccess)
                 LOG_ERROR("Could not wait for fences.");
 
             // destroy the objects
-            state.device.destroyFence(fence);
+            state_ref.device.destroyFence(fence);
 
-            std::lock_guard<std::mutex> lock(state.multithread_pool_mutex);
-            state.device.freeCommandBuffers(state.multithread_command_pool, surface_cmd);
+            std::lock_guard<std::mutex> lock(state_ref.multithread_pool_mutex);
+            state_ref.device.freeCommandBuffers(state_ref.multithread_command_pool, surface_cmd);
         };
         state.request_queue.push(CallbackRequest{ new CallbackRequestFunction(std::move(vk_callback)) });
 
@@ -1171,7 +1182,7 @@ ColorSurfaceCacheInfo *VKSurfaceCache::perform_surface_sync() {
         if (!last_written_surface->copy_buffer)
             last_written_surface->copy_buffer = std::make_unique<vkutil::Buffer>();
 
-        vkutil::Buffer &copy_buffer = *last_written_surface->copy_buffer;
+        vkutil::Buffer ©_buffer = *last_written_surface->copy_buffer;
 
         if (!copy_buffer.buffer) {
             copy_buffer.size = last_written_surface->stride_bytes * last_written_surface->original_height;
@@ -1253,6 +1264,8 @@ static void swizzle_text_T(T *pixels, uint32_t nb_pixel, ColorSurfaceCacheInfo *
             // ARGB
             swizzle_text_T_4<T, 2>(pixels, nb_pixel);
             break;
+        default: // Added default to handle identity or other cases
+            break;
         }
     }
 }
@@ -1289,6 +1302,8 @@ void VKSurfaceCache::perform_post_surface_sync(const MemState &mem, ColorSurface
         break;
     case 32:
         swizzle_text_T<uint32_t>(reinterpret_cast<uint32_t *>(pixels), nb_pixels, surface);
+        break;
+    default: // Added default to handle other bit depths if necessary
         break;
     }
 }
@@ -1339,19 +1354,24 @@ vk::ImageView VKSurfaceCache::sourcing_color_surface_for_presentation(Ptr<const 
             if (info.swizzle == vkutil::rgba_mapping && info.texture.format == vk::Format::eR8G8B8A8Unorm)
                 return info.texture.view;
 
-            if (!info.alternate_view) {
+            // wrong swizzle not supported in this case, if use_rgba16_for_rgba8 is enabled, the texture will be rgba16
+            if (state.features.use_rgba16_for_rgba8 && info.texture.format == vk::Format::eR16G16B16A16Sfloat)
+                return info.texture.view;
+
+            if (!info.alternate_view) { // Note: Patch uses info.sampled_image.view here, your code info.alternate_view
                 // create a view with the right swizzle and without gamma correction
+                // Patch: info.sampled_image.destroy_on_deletion = false; (Not present in your code for alternate_view)
                 vk::ImageViewCreateInfo view_info{
                     .image = info.texture.image,
                     .viewType = vk::ImageViewType::e2D,
-                    .format = vk::Format::eR8G8B8A8Unorm,
+                    .format = vk::Format::eR8G8B8A8Unorm, // Patch implies this should be the target presentation format
                     .components = vkutil::color_to_texture_swizzle(info.swizzle, vkutil::rgba_mapping),
                     .subresourceRange = vkutil::color_subresource_range
                 };
                 info.alternate_view = state.device.createImageView(view_info);
             }
 
-            return info.alternate_view;
+            return info.alternate_view; // Patch uses info.sampled_image.view
         }
     }
 

@@ -23,6 +23,7 @@
 
 #include <gxm/functions.h>
 #include <renderer/functions.h>
+#include <features/state.h> // Added for FeatureState used in set_context
 
 #include <util/log.h>
 #include <util/overloaded.h>
@@ -127,6 +128,8 @@ void set_context(VKContext &context, MemState &mem, VKRenderTarget *rt, const Fe
         context.record.is_gamma_corrected = false;
         context.record.is_maskupdate = false;
         context.record.color_base_format = SCE_GXM_COLOR_BASE_FORMAT_U8U8U8U8;
+    } else if (features.use_rgba16_for_rgba8 && vk_format == vk::Format::eR8G8B8A8Unorm) {
+        vk_format = vk::Format::eR16G16B16A16Sfloat;
     }
     context.current_color_format = vk_format;
 
@@ -376,7 +379,7 @@ void VKContext::stop_render_pass() {
     in_renderpass = false;
 }
 
-void VKContext::stop_recording(const SceGxmNotification &notif1, const SceGxmNotification &notif2, bool submit) {
+void VKContext::stop_recording(const SceGxmNotification ¬if1, const SceGxmNotification ¬if2, bool submit) {
     if (!is_recording) {
         LOG_ERROR("Stopping recording while not recording");
         return;
