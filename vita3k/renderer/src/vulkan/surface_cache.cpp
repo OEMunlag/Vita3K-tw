@@ -1179,7 +1179,7 @@ ColorSurfaceCacheInfo *VKSurfaceCache::perform_surface_sync() {
         if (!last_written_surface->copy_buffer)
             last_written_surface->copy_buffer = std::make_unique<vkutil::Buffer>();
 
-        vkutil::Buffer ©_buffer_ref = *last_written_surface->copy_buffer; // Get a reference
+        vkutil::Buffer &copy_buffer_ref = *last_written_surface->copy_buffer; // Get a reference
 
         if (!copy_buffer_ref.buffer) {
             copy_buffer_ref.size = last_written_surface->stride_bytes * last_written_surface->original_height;
