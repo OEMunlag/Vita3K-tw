@@ -1139,63 +1139,59 @@ ColorSurfaceCacheInfo *VKSurfaceCache::perform_surface_sync() {
     bool is_swizzle_identity = last_written_surface->swizzle.r == vk::ComponentSwizzle::eR;
     if (!is_swizzle_identity && !format_support_swizzle(last_written_surface->format)) {
         LOG_WARN_ONCE("Surface sync with swizzle not support on {}", vk::to_string(last_written_surface->texture.format));
-
         is_swizzle_identity = true;
     }
 
     if (state.res_multiplier != 1.0f) {
         // scale back the image using a blit command first
-
         if (!last_written_surface->blit_image)
             last_written_surface->blit_image = std::make_unique<vkutil::Image>();
 
-        vkutil::Image &blit_image = *last_written_surface->blit_image;
+        vkutil::Image &blit_image_ref = *last_written_surface->blit_image;
 
-        if (!blit_image.image) {
-            blit_image.format = last_written_surface->texture.format;
-            blit_image.width = last_written_surface->original_width;
-            blit_image.height = last_written_surface->original_height;
+        if (!blit_image_ref.image) {
+            blit_image_ref.format = last_written_surface->texture.format;
+            blit_image_ref.width = last_written_surface->original_width;
+            blit_image_ref.height = last_written_surface->original_height;
 
-            blit_image.init_image(vk::ImageUsageFlagBits::eTransferSrc | vk::ImageUsageFlagBits::eTransferDst);
-            blit_image.transition_to(cmd_buffer, vkutil::ImageLayout::TransferDst);
+            blit_image_ref.init_image(vk::ImageUsageFlagBits::eTransferSrc | vk::ImageUsageFlagBits::eTransferDst);
+            blit_image_ref.transition_to(cmd_buffer, vkutil::ImageLayout::TransferDst);
         } else {
-            blit_image.transition_to_discard(cmd_buffer, vkutil::ImageLayout::TransferDst);
+            blit_image_ref.transition_to_discard(cmd_buffer, vkutil::ImageLayout::TransferDst);
         }
 
         vk::ImageBlit blit{
             .srcSubresource = vkutil::color_subresource_layer,
-            .srcOffsets = std::array<vk::Offset3D, 2>{ vk::Offset3D{ 0, 0, 0 }, vk::Offset3D{ last_written_surface->width, last_written_surface->height, 1 } },
+            .srcOffsets = std::array<vk::Offset3D, 2>{ vk::Offset3D{ 0, 0, 0 }, vk::Offset3D{ static_cast<int32_t>(last_written_surface->width), static_cast<int32_t>(last_written_surface->height), 1 } },
             .dstSubresource = vkutil::color_subresource_layer,
-            .dstOffsets = std::array<vk::Offset3D, 2>{ vk::Offset3D{ 0, 0, 0 }, vk::Offset3D{ last_written_surface->original_width, last_written_surface->original_height, 1 } },
+            .dstOffsets = std::array<vk::Offset3D, 2>{ vk::Offset3D{ 0, 0, 0 }, vk::Offset3D{ static_cast<int32_t>(last_written_surface->original_width), static_cast<int32_t>(last_written_surface->original_height), 1 } },
         };
-        // Apply nearest filter for the time being, linear might be better if we have no data in the texture tho
-        cmd_buffer.blitImage(image_to_copy, image_layout, blit_image.image, vk::ImageLayout::eTransferDstOptimal, blit, vk::Filter::eNearest);
+        cmd_buffer.blitImage(image_to_copy, image_layout, blit_image_ref.image, vk::ImageLayout::eTransferDstOptimal, blit, vk::Filter::eNearest);
 
-        blit_image.transition_to(cmd_buffer, vkutil::ImageLayout::TransferSrc);
-        image_to_copy = blit_image.image;
+        blit_image_ref.transition_to(cmd_buffer, vkutil::ImageLayout::TransferSrc);
+        image_to_copy = blit_image_ref.image;
         image_layout = vk::ImageLayout::eTransferSrcOptimal;
     }
 
-    vk::Buffer buffer;
+    vk::Buffer buffer_handle; // Renamed to avoid conflict with the function vkutil::copy_buffer
     uint32_t offset;
     if (format_need_additional_memory(last_written_surface->format)) {
         if (!last_written_surface->copy_buffer)
             last_written_surface->copy_buffer = std::make_unique<vkutil::Buffer>();
 
-        vkutil::Buffer ©_buffer = *last_written_surface->copy_buffer;
+        vkutil::Buffer ©_buffer_ref = *last_written_surface->copy_buffer; // Get a reference
 
-        if (!copy_buffer.buffer) {
-            copy_buffer.size = last_written_surface->stride_bytes * last_written_surface->original_height;
-            copy_buffer.init_buffer(vk::BufferUsageFlagBits::eTransferDst, vkutil::vma_mapped_alloc);
+        if (!copy_buffer_ref.buffer) {
+            copy_buffer_ref.size = last_written_surface->stride_bytes * last_written_surface->original_height;
+            copy_buffer_ref.init_buffer(vk::BufferUsageFlagBits::eTransferDst, vkutil::vma_mapped_alloc);
         }
-
-        buffer = copy_buffer.buffer;
+        buffer_handle = copy_buffer_ref.buffer; // Assign the underlying vk::Buffer handle
         offset = 0;
     } else {
-        std::tie(buffer, offset) = state.get_matching_mapping(last_written_surface->data);
+        std::tie(buffer_handle, offset) = state.get_matching_mapping(last_written_surface->data);
     }
     const uint32_t pixel_stride = (last_written_surface->stride_bytes * 8) / gxm::bits_per_pixel(last_written_surface->format);
-    vk::BufferImageCopy copy{
+    vk::BufferImageCopy copy_region{ // Renamed 'copy' to 'copy_region' to avoid conflict
         .bufferOffset = offset,
         .bufferRowLength = pixel_stride,
         .bufferImageHeight = last_written_surface->original_height,
@@ -1203,11 +1199,11 @@ ColorSurfaceCacheInfo *VKSurfaceCache::perform_surface_sync() {
         .imageOffset = { 0, 0, 0 },
         .imageExtent = { last_written_surface->original_width, last_written_surface->original_height, 1 }
     };
-    cmd_buffer.copyImageToBuffer(image_to_copy, image_layout, buffer, copy);
+    cmd_buffer.copyImageToBuffer(image_to_copy, image_layout, buffer_handle, copy_region);
 
     const bool need_post_sync = !is_swizzle_identity || format_need_additional_memory(last_written_surface->format);
     ColorSurfaceCacheInfo *return_value = need_post_sync ? last_written_surface : nullptr;
-    last_written_surface = nullptr;
+    last_written_surface = nullptr; // Important: reset this after use for sync
 
     return return_value;
 }
